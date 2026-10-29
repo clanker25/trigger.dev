@@ -1,0 +1,14 @@
+{
+  "compilerOptions": {
+    "esModuleInterop": true,
+    "forceConsistentCasingInFileNames": true,
+    "isolatedModules": false,
+    "module": "nodenext",
+    "moduleResolution": "nodenext",
+    "preserveWatchOutput": false,
+    "skipLibCheck": true,
+    "noEmit": true,
+    "strict": true
+  },
+  "exclude": ["node_modules", "dist", "generated", "**/*.test.ts", "vitest.config.ts"]
+}

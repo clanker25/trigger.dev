@@ -1,0 +1,19 @@
+{
+  "compilerOptions": {
+    "target": "ES2020",
+    "lib": ["ES2020"],
+    "module": "Node16",
+    "moduleResolution": "Node16",
+    "moduleDetection": "force",
+    "verbatimModuleSyntax": true,
+    "esModuleInterop": true,
+    "forceConsistentCasingInFileNames": true,
+    "isolatedModules": true,
+    "preserveWatchOutput": false,
+    "skipLibCheck": false,
+    "noEmit": true,
+    "strict": true,
+    "types": ["node"]
+  },
+  "exclude": ["node_modules", "drizzle"]
+}

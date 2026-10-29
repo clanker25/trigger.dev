@@ -1,0 +1,192 @@
+import type { ReadClient, SnapshotResidency } from "@internal/run-store";
+import type { PrismaClientOrTransaction, Waitpoint } from "@trigger.dev/database";
+import type { ShardKey } from "@trigger.dev/core/v3/isomorphic";
+import type { WaitpointMintType } from "./mintPolicy.js";
+
+/**
+ * The per-mint inputs a routing coordinator needs to select residency. Optional on every create
+ * param: when it is absent the mint defaults to legacy, which is the dark production default until a
+ * call site threads it (a later ticket). Only a routing coordinator reads it.
+ */
+export type WaitpointMintContext = {
+  organizationId: string;
+  /** Optional compatibility hint from older callers; snapshot residency does not gate minting. */
+  parentResidency?: SnapshotResidency;
+  /** Explicit eligibility override for this mint; otherwise RUN and DATETIME are eligible. */
+  eligibleTypes?: ReadonlySet<WaitpointMintType>;
+};
+
+/**
+ * The waitpoint and edge state operations that `WaitpointSystem` delegates.
+ *
+ * Orchestration stays in `WaitpointSystem`: the run lock, snapshot transitions,
+ * worker-job enqueues, event emissions and racepoints. This owns waitpoint and
+ * edge state only, so a non-Postgres implementation can replace it without any
+ * caller learning that it changed.
+ *
+ * The residency hints and `tx` are opaque pass-throughs. Opaque does not mean
+ * type-free — a Prisma type appears here — it means a non-Postgres implementation
+ * never reads the value.
+ */
+/**
+ * Context a run-keyed operation forwards so a routing coordinator can decide whether the run could hold
+ * MemoryDB edges (rollout is keyed by organization). Optional and opaque: the legacy coordinator never
+ * reads it. An absent organizationId keeps the legacy route without store discovery.
+ */
+export type RunKeyedRoutingContext = {
+  organizationId?: string;
+};
+
+export type WaitpointCoordinator = {
+  clearRunBlockState(params: ClearRunBlockStateParams): Promise<{ count: number }>;
+  readRunBlockState(runId: string, context?: RunKeyedRoutingContext): Promise<RunBlockEdge[]>;
+  registerBlocks(params: RegisterBlocksParams): Promise<RegisterBlocksResult>;
+  registerBlocksLockless(params: RegisterBlocksLocklessParams): Promise<void>;
+  complete(params: CompleteParams): Promise<CompleteResult>;
+  createDateTimeWaitpoint(params: CreateDateTimeWaitpointParams): Promise<CreateWaitpointResult>;
+  createManualWaitpoint(params: CreateManualWaitpointParams): Promise<CreateWaitpointResult>;
+  mintAssociatedWaitpointData(params: {
+    projectId: string;
+    environmentId: string;
+    /** This write skips the router's stamp check. */
+    anchorRunId: string;
+  }): AssociatedWaitpointData;
+  createAssociatedWaitpoint(params: {
+    runId: string;
+    data: AssociatedWaitpointData;
+  }): Promise<Waitpoint>;
+};
+
+export type ClearRunBlockStateParams = {
+  runId: string;
+  /** Edge ids to delete. Omit to clear every edge for the run. */
+  edgeIds?: string[];
+  /**
+   * Forwarded verbatim on the full-clear leg only, and never on the bounded leg
+   * or an edge write. A routing store strips it; a single store joins it.
+   */
+  tx?: PrismaClientOrTransaction;
+  /**
+   * The run's organization, so a routing coordinator can skip MemoryDB for a run whose org could not
+   * hold store edges. Only a routing coordinator reads it; the legacy coordinator ignores it.
+   */
+  organizationId?: string;
+};
+
+/**
+ * One block edge, with the fields the unblock decision reads.
+ *
+ * `batchId` on child-result edges (those with a `batchIndex`) picks the batch that labels a
+ * resumed run's results in `continueRunIfUnblocked`, so every implementation must return it.
+ */
+export type RunBlockEdge = {
+  id: string;
+  batchId: string | null;
+  batchIndex: number | null;
+  waitpoint: Pick<Waitpoint, "id" | "status" | "type" | "completedAfter">;
+};
+
+export type RegisterBlocksParams = RunKeyedRoutingContext & {
+  runId: string;
+  waitpointIds: string[];
+  projectId: string;
+  spanIdToComplete?: string;
+  batchId?: string;
+  batchIndex?: number;
+  /**
+   * Read client for the pending count only. The caller resolves `tx ?? prisma` once
+   * and passes the result, so the writer is used when the caller is inside a
+   * transaction and the pending re-read is read-your-writes on the owning primary.
+   * Never forwarded to the edge write.
+   */
+  client: ReadClient;
+};
+
+export type RegisterBlocksResult = {
+  pendingCount: number;
+  /** This operation's router decision, used only to carry context onto its continuation job. */
+  storeRoutingEnabled?: true;
+};
+
+/**
+ * The lockless variant writes the edge and does not count. Two methods rather than
+ * one method with a flag, so "the batch path issues no extra query" is structural.
+ */
+export type RegisterBlocksLocklessParams = Omit<RegisterBlocksParams, "client">;
+
+export type CompleteParams = RunKeyedRoutingContext & {
+  waitpointId: string;
+  output?: {
+    value: string;
+    type?: string;
+    isError: boolean;
+  };
+};
+
+/** One run blocked by the completed waitpoint, with the fields the caller's fan-out loop reads. */
+type BlockedRun = {
+  taskRunId: string;
+  spanIdToComplete: string | null;
+  createdAt: Date;
+};
+
+export type CompleteResult = {
+  waitpoint: Waitpoint;
+  blockedRuns: BlockedRun[];
+};
+
+/**
+ * Discriminated on purpose. The caller enqueues the `finishWaitpoint` job only in the
+ * `created` branch, because today's create methods return before their enqueue on the
+ * cached path. A boolean would let a later edit enqueue on both branches.
+ */
+export type CreateWaitpointResult =
+  | { kind: "cached"; waitpoint: Waitpoint }
+  | { kind: "created"; waitpoint: Waitpoint };
+
+export type CreateDateTimeWaitpointParams = {
+  /**
+   * Co-locates the waitpoint with this run's DB. There is deliberately no standalone arm: omitting
+   * it on a gen-2 environment lands the row on a gen-1 store, silently. A standalone caller needs
+   * a shard hint here first, as `CreateManualWaitpointParams` has.
+   */
+  runId?: string;
+  projectId: string;
+  environmentId: string;
+  completedAfter: Date;
+  idempotencyKey?: string;
+  idempotencyKeyExpiresAt?: Date;
+  /** Optional mint-residency inputs. Absent = legacy (the dark default). Only a routing coordinator reads it. */
+  mintContext?: WaitpointMintContext;
+};
+
+export type CreateManualWaitpointParams = {
+  runId?: string;
+  environmentId: string;
+  projectId: string;
+  idempotencyKey?: string;
+  idempotencyKeyExpiresAt?: Date;
+  timeout?: Date;
+  tags?: string[];
+  /**
+   * See the `standaloneResidency` param doc on `WaitpointSystem.createManualWaitpoint` for the
+   * full rationale. Only a Postgres implementation reads this.
+   */
+  standaloneResidency?: "NEW" | "LEGACY";
+  /** For a standalone token. When it names a gen-2 shard, ignore `standaloneResidency`. */
+  standaloneShardKey?: ShardKey;
+  /** Optional mint-residency inputs. Absent = legacy (the dark default). Only a routing coordinator reads it. */
+  mintContext?: WaitpointMintContext;
+};
+
+/** The RUN-waitpoint row data. Pure — no store touch — so the mint is coordinator-owned. */
+export type AssociatedWaitpointData = {
+  id: string;
+  friendlyId: string;
+  type: "RUN";
+  status: "PENDING";
+  idempotencyKey: string;
+  userProvidedIdempotencyKey: false;
+  projectId: string;
+  environmentId: string;
+};
