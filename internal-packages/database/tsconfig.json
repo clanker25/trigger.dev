@@ -1,0 +1,14 @@
+{
+  "compilerOptions": {
+    "esModuleInterop": true,
+    "forceConsistentCasingInFileNames": true,
+    "isolatedModules": true,
+    "module": "nodenext",
+    "moduleResolution": "nodenext",
+    "preserveWatchOutput": true,
+    "skipLibCheck": true,
+    "noEmit": false,
+    "strict": false
+  },
+  "exclude": ["node_modules", "dist"]
+}

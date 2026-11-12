@@ -1,0 +1,9 @@
+{
+  "extends": "../../.configs/tsconfig.base.json",
+  "compilerOptions": {
+    "composite": true,
+    "sourceMap": false,
+    "stripInternal": false,
+    "isolatedDeclarations": true
+  }
+}
